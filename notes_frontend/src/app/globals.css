@@ -1,10 +1,12 @@
 @import "tailwindcss";
 
 :root {
-  --color-primary: #000000;
-  --color-secondary: #FFFFFF;
-  --color-accent: #3B82F6;
-  --color-background: #FFFFFF;
+  --color-primary: #111827; /* slate-900 */
+  --color-secondary: #64748b; /* slate-500/600 */
+  --color-accent: #3b82f6; /* blue-500 */
+  --color-accent2: #06b6d4; /* cyan-500 */
+  --color-background: #f9fafb; /* gray-50 */
+  --color-surface: #ffffff;
 }
 
 * {
@@ -23,4 +25,12 @@ body {
 
 body {
   font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Small utility to make content previews nicer */
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
