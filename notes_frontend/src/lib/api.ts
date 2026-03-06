@@ -172,3 +172,21 @@ export async function restoreNoteVersion(noteId: number, versionId: string): Pro
     z.object({ note: NoteSchema })
   );
 }
+
+// PUBLIC_INTERFACE
+export async function getNoteVersion(noteId: number, versionId: string): Promise<{ version: Note }> {
+  /**
+   * Fetch the full note snapshot for a given version.
+   *
+   * Contract:
+   * - Input: noteId + versionId
+   * - Output: { version: Note } where Note contains content/title/tags snapshot
+   *
+   * Note: This requires backend support for GET /notes/{noteId}/versions/{versionId}.
+   */
+  return http(
+    `/notes/${noteId}/versions/${encodeURIComponent(versionId)}`,
+    undefined,
+    z.object({ version: NoteSchema })
+  );
+}

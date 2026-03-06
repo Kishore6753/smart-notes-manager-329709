@@ -12,9 +12,12 @@ import {
   searchNotes,
   setFavorite,
   updateNote,
-  type NoteVersionSummary
+  type NoteVersionSummary,
+  getNoteVersion
 } from "@/lib/api";
 import { MarkdownEditor, type MarkdownViewMode } from "@/components/MarkdownEditor";
+import { MarkdownPreview } from "@/components/MarkdownPreview";
+import { TextDiff } from "@/components/TextDiff";
 
 type LoadState = "idle" | "loading" | "error";
 
@@ -62,6 +65,8 @@ export default function HomePage() {
   const [versionsState, setVersionsState] = useState<LoadState>("idle");
   const [versionsError, setVersionsError] = useState<string | null>(null);
   const [versions, setVersions] = useState<NoteVersionSummary[]>([]);
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  const [versionSnapshots, setVersionSnapshots] = useState<Record<string, { content: string }>>({});
 
   const selectedNote: Note | null = useMemo(() => {
     if (selectedId === null || selectedId === "new") return null;
@@ -105,6 +110,8 @@ export default function HomePage() {
 
       // Versions only apply to persisted notes.
       setVersions([]);
+      setSelectedVersionId(null);
+      setVersionSnapshots({});
       setVersionsError(null);
       setVersionsState("idle");
       return;
@@ -116,6 +123,8 @@ export default function HomePage() {
     setDraftTags((selectedNote.tags ?? []).join(", "));
     setDraftContent(selectedNote.content ?? "");
     setDraftFavorite(Boolean(selectedNote.is_favorite));
+    setSelectedVersionId(null);
+    setVersionSnapshots({});
 
     // If the versions panel is open, refresh its contents when changing notes.
     if (versionsOpen && typeof selectedId === "number") {
@@ -202,6 +211,11 @@ export default function HomePage() {
       const data = await listNoteVersions(selectedId);
       setVersions(data.items);
       setVersionsState("idle");
+
+      // If the selected version no longer exists, clear selection.
+      setSelectedVersionId((prev) =>
+        prev && data.items.some((v) => v.version_id === prev) ? prev : null
+      );
     } catch (e) {
       setVersionsState("error");
       setVersionsError(e instanceof Error ? e.message : "Failed to load versions");
@@ -445,32 +459,113 @@ export default function HomePage() {
                   {versionsError && <div className="error">{versionsError}</div>}
 
                   <div style={{ display: "grid", gap: 6 }}>
-                    {versions.map((v) => (
-                      <div
-                        key={v.version_id}
-                        className="note-card"
-                        style={{ padding: 10, cursor: "default" }}
-                        aria-label={`Version ${v.version_id}`}
-                      >
-                        <div className="note-card-title" style={{ alignItems: "center" }}>
-                          <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
-                            {v.created_at}
-                          </span>
-                          <button
-                            className="btn"
-                            type="button"
-                            onClick={() => void onRestoreVersion(v.version_id)}
-                            disabled={saving}
-                            title="Restore this version"
-                          >
-                            Restore
-                          </button>
+                    {versions.map((v) => {
+                      const isSelected = selectedVersionId === v.version_id;
+                      return (
+                        <div
+                          key={v.version_id}
+                          className="note-card"
+                          style={{
+                            padding: 10,
+                            cursor: "default",
+                            outline: isSelected ? "2px solid rgba(6, 182, 212, 0.55)" : "none"
+                          }}
+                          aria-label={`Version ${v.version_id}`}
+                        >
+                          <div className="note-card-title" style={{ alignItems: "center" }}>
+                            <span
+                              style={{
+                                fontFamily:
+                                  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+                              }}
+                            >
+                              {v.created_at}
+                            </span>
+
+                            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                              <button
+                                className="btn"
+                                type="button"
+                                onClick={() => {
+                                  const next = isSelected ? null : v.version_id;
+                                  setSelectedVersionId(next);
+                                  if (!next) return;
+
+                                  // Load snapshot content on-demand (cached per version_id).
+                                  if (versionSnapshots[next]?.content != null) return;
+
+                                  setVersionsError(null);
+                                  void getNoteVersion(selectedId, next)
+                                    .then((resp) => {
+                                      setVersionSnapshots((prev) => ({
+                                        ...prev,
+                                        [next]: { content: resp.version.content ?? "" }
+                                      }));
+                                    })
+                                    .catch((e) => {
+                                      // Keep compare mode open, but show the error in the versions panel.
+                                      setVersionsError(
+                                        e instanceof Error
+                                          ? e.message
+                                          : "Failed to load version snapshot (backend may not support it)."
+                                      );
+                                    });
+                                }}
+                                disabled={saving}
+                                title="Compare this version against current draft"
+                              >
+                                {isSelected ? "Close diff" : "Compare"}
+                              </button>
+                              <button
+                                className="btn"
+                                type="button"
+                                onClick={() => void onRestoreVersion(v.version_id)}
+                                disabled={saving}
+                                title="Restore this version"
+                              >
+                                Restore
+                              </button>
+                            </div>
+                          </div>
+                          <div className="small" style={{ opacity: 0.85 }}>
+                            {v.message ? v.message : "Manual snapshot"}
+                          </div>
+
+                          {isSelected && selectedNote && (
+                            <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+                              {!versionSnapshots[v.version_id]?.content ? (
+                                <div className="small">Loading snapshot…</div>
+                              ) : (
+                                <>
+                                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                                    <div aria-label="Selected version preview">
+                                      <div className="small" style={{ marginBottom: 6 }}>
+                                        Selected version (rendered)
+                                      </div>
+                                      <MarkdownPreview markdown={versionSnapshots[v.version_id]?.content ?? ""} />
+                                    </div>
+
+                                    <div aria-label="Current draft preview">
+                                      <div className="small" style={{ marginBottom: 6 }}>
+                                        Current draft (rendered)
+                                      </div>
+                                      <MarkdownPreview markdown={draftContent} />
+                                    </div>
+                                  </div>
+
+                                  <TextDiff
+                                    oldText={versionSnapshots[v.version_id]?.content ?? ""}
+                                    newText={draftContent}
+                                    oldLabel={`Version @ ${v.created_at}`}
+                                    newLabel="Current draft"
+                                  />
+                                </>
+                              )}
+                            </div>
+                          )}
                         </div>
-                        <div className="small" style={{ opacity: 0.85 }}>
-                          {v.message ? v.message : "Manual snapshot"}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
                   <div className="small" style={{ marginTop: 8 }}>
