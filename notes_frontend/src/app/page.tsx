@@ -6,9 +6,13 @@ import {
   deleteNote,
   listNotes,
   Note,
+  listNoteVersions,
+  restoreNoteVersion,
+  saveNoteVersion,
   searchNotes,
   setFavorite,
-  updateNote
+  updateNote,
+  type NoteVersionSummary
 } from "@/lib/api";
 import { MarkdownEditor, type MarkdownViewMode } from "@/components/MarkdownEditor";
 
@@ -54,6 +58,11 @@ export default function HomePage() {
   const [saving, setSaving] = useState(false);
   const [mutatingError, setMutatingError] = useState<string | null>(null);
 
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [versionsState, setVersionsState] = useState<LoadState>("idle");
+  const [versionsError, setVersionsError] = useState<string | null>(null);
+  const [versions, setVersions] = useState<NoteVersionSummary[]>([]);
+
   const selectedNote: Note | null = useMemo(() => {
     if (selectedId === null || selectedId === "new") return null;
     return notes.find((n) => n.id === selectedId) ?? null;
@@ -93,6 +102,11 @@ export default function HomePage() {
       setDraftTags("");
       setDraftContent(`# New note\n\nCreated: ${nowIso()}\n\n`);
       setDraftFavorite(false);
+
+      // Versions only apply to persisted notes.
+      setVersions([]);
+      setVersionsError(null);
+      setVersionsState("idle");
       return;
     }
 
@@ -102,7 +116,22 @@ export default function HomePage() {
     setDraftTags((selectedNote.tags ?? []).join(", "));
     setDraftContent(selectedNote.content ?? "");
     setDraftFavorite(Boolean(selectedNote.is_favorite));
-  }, [selectedId, selectedNote]);
+
+    // If the versions panel is open, refresh its contents when changing notes.
+    if (versionsOpen && typeof selectedId === "number") {
+      setVersionsState("loading");
+      setVersionsError(null);
+      void listNoteVersions(selectedId)
+        .then((data) => {
+          setVersions(data.items);
+          setVersionsState("idle");
+        })
+        .catch((e) => {
+          setVersionsState("error");
+          setVersionsError(e instanceof Error ? e.message : "Failed to load versions");
+        });
+    }
+  }, [selectedId, selectedNote, versionsOpen]);
 
   const onNewNote = useCallback(() => {
     setSelectedId("new");
@@ -165,6 +194,62 @@ export default function HomePage() {
     }
   }, [draftTitle, draftContent, draftTags, draftFavorite, selectedId, refresh]);
 
+  const refreshVersions = useCallback(async () => {
+    if (typeof selectedId !== "number") return;
+    setVersionsState("loading");
+    setVersionsError(null);
+    try {
+      const data = await listNoteVersions(selectedId);
+      setVersions(data.items);
+      setVersionsState("idle");
+    } catch (e) {
+      setVersionsState("error");
+      setVersionsError(e instanceof Error ? e.message : "Failed to load versions");
+    }
+  }, [selectedId]);
+
+  const onSaveVersion = useCallback(async () => {
+    if (typeof selectedId !== "number") return;
+    setSaving(true);
+    setMutatingError(null);
+    try {
+      await saveNoteVersion(selectedId);
+      if (versionsOpen) await refreshVersions();
+    } catch (e) {
+      setMutatingError(e instanceof Error ? e.message : "Failed to save version");
+    } finally {
+      setSaving(false);
+    }
+  }, [selectedId, versionsOpen, refreshVersions]);
+
+  const onRestoreVersion = useCallback(
+    async (versionId: string) => {
+      if (typeof selectedId !== "number") return;
+      setSaving(true);
+      setMutatingError(null);
+      try {
+        const restored = await restoreNoteVersion(selectedId, versionId);
+
+        // Update list item immediately so editor reflects restored content without waiting.
+        setNotes((prev) => prev.map((n) => (n.id === restored.note.id ? restored.note : n)));
+
+        // Update local draft to match restored note.
+        setDraftTitle(restored.note.title ?? "");
+        setDraftTags((restored.note.tags ?? []).join(", "));
+        setDraftContent(restored.note.content ?? "");
+        setDraftFavorite(Boolean(restored.note.is_favorite));
+
+        await refresh();
+        if (versionsOpen) await refreshVersions();
+      } catch (e) {
+        setMutatingError(e instanceof Error ? e.message : "Failed to restore version");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [selectedId, refresh, refreshVersions, versionsOpen]
+  );
+
   const onDelete = useCallback(async () => {
     if (typeof selectedId !== "number") return;
 
@@ -174,6 +259,8 @@ export default function HomePage() {
     try {
       await deleteNote(selectedId);
       setSelectedId(null);
+      setVersions([]);
+      setVersionsOpen(false);
       await refresh();
     } catch (e) {
       setMutatingError(e instanceof Error ? e.message : "Failed to delete note");
@@ -292,6 +379,31 @@ export default function HomePage() {
                 {draftFavorite ? "★ Favorite" : "☆ Favorite"}
               </button>
 
+              <button
+                className="btn"
+                type="button"
+                onClick={() => void onSaveVersion()}
+                disabled={saving || typeof selectedId !== "number"}
+                title="Save a manual snapshot version for this note"
+              >
+                Save version
+              </button>
+
+              <button
+                className="btn"
+                type="button"
+                onClick={() => {
+                  const next = !versionsOpen;
+                  setVersionsOpen(next);
+                  if (next) void refreshVersions();
+                }}
+                disabled={typeof selectedId !== "number"}
+                aria-expanded={versionsOpen}
+                title="Browse and restore previous versions"
+              >
+                {versionsOpen ? "Hide versions" : "Versions"}
+              </button>
+
               <button className="btn btn-primary" type="button" onClick={() => void onSave()} disabled={saving}>
                 {saving ? "Saving…" : "Save"}
               </button>
@@ -312,6 +424,61 @@ export default function HomePage() {
             {mutatingError && <div className="error">{mutatingError}</div>}
 
             <div style={{ display: "grid", gap: 10 }}>
+              {versionsOpen && typeof selectedId === "number" && (
+                <div className="panel" aria-label="Version history" style={{ background: "transparent" }}>
+                  <div className="panel-header" style={{ padding: 0, marginBottom: 6 }}>
+                    <div className="panel-title">Version history</div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <div className="small">
+                        {versionsState === "loading"
+                          ? "Loading…"
+                          : versions.length
+                            ? `${versions.length} saved`
+                            : "No versions yet"}
+                      </div>
+                      <button className="btn" type="button" onClick={() => void refreshVersions()} disabled={saving}>
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+
+                  {versionsError && <div className="error">{versionsError}</div>}
+
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {versions.map((v) => (
+                      <div
+                        key={v.version_id}
+                        className="note-card"
+                        style={{ padding: 10, cursor: "default" }}
+                        aria-label={`Version ${v.version_id}`}
+                      >
+                        <div className="note-card-title" style={{ alignItems: "center" }}>
+                          <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+                            {v.created_at}
+                          </span>
+                          <button
+                            className="btn"
+                            type="button"
+                            onClick={() => void onRestoreVersion(v.version_id)}
+                            disabled={saving}
+                            title="Restore this version"
+                          >
+                            Restore
+                          </button>
+                        </div>
+                        <div className="small" style={{ opacity: 0.85 }}>
+                          {v.message ? v.message : "Manual snapshot"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="small" style={{ marginTop: 8 }}>
+                    Restoring applies snapshot to the note and also creates a new version entry.
+                  </div>
+                </div>
+              )}
+
               <div>
                 <div className="small">Title</div>
                 <input

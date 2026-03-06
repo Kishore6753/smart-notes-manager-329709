@@ -16,8 +16,21 @@ const NotesListSchema = z.object({
   total: z.number().int()
 });
 
+const NoteVersionSummarySchema = z.object({
+  note_id: z.number().int(),
+  version_id: z.string(),
+  created_at: z.string(),
+  message: z.string().default("")
+});
+
+const NoteVersionsListSchema = z.object({
+  items: z.array(NoteVersionSummarySchema)
+});
+
 export type Note = z.infer<typeof NoteSchema>;
 export type NotesList = z.infer<typeof NotesListSchema>;
+export type NoteVersionSummary = z.infer<typeof NoteVersionSummarySchema>;
+export type NoteVersionsList = z.infer<typeof NoteVersionsListSchema>;
 
 export type NoteCreate = {
   title: string;
@@ -128,5 +141,34 @@ export async function setFavorite(noteId: number, isFavorite: boolean): Promise<
     `/favorites/${noteId}`,
     { method: "PUT", body: JSON.stringify({ is_favorite: isFavorite }) },
     z.object({ id: z.number().int(), is_favorite: z.boolean() })
+  );
+}
+
+// PUBLIC_INTERFACE
+export async function saveNoteVersion(noteId: number, message?: string): Promise<NoteVersionSummary> {
+  /** Manually save a version snapshot for the given note id. */
+  return http(
+    `/notes/${noteId}/versions`,
+    {
+      method: "POST",
+      body: JSON.stringify({ message: message ?? "" })
+    },
+    NoteVersionSummarySchema
+  );
+}
+
+// PUBLIC_INTERFACE
+export async function listNoteVersions(noteId: number): Promise<NoteVersionsList> {
+  /** List saved versions for a note (newest first). */
+  return http(`/notes/${noteId}/versions`, undefined, NoteVersionsListSchema);
+}
+
+// PUBLIC_INTERFACE
+export async function restoreNoteVersion(noteId: number, versionId: string): Promise<{ note: Note }> {
+  /** Restore a note from a saved version snapshot. */
+  return http(
+    `/notes/${noteId}/versions/${encodeURIComponent(versionId)}/restore`,
+    { method: "POST" },
+    z.object({ note: NoteSchema })
   );
 }
